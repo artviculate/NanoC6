@@ -1,69 +1,257 @@
-# Prerequisites
-*.d
+#include <M5NanoC6.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <M5UnitENV.h>
+#include <ArduinoJson.h>
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+// Wi-Fi Configuration
+const char* WIFI_SSID = "Wifi_SSID";
+const char* WIFI_PASS = "WIFI_PASS";
 
-# Precompiled Headers
-*.gch
-*.pch
+// MQTT Broker Details
+const char* MQTT_BROKER = "IP";
+const int   MQTT_PORT   = PORT
+const char* CLIENT_ID   = "NanoC6_ENV3";
 
-# Linker files
-*.ilk
+// Target Meshtastic Channel Topic
+const char* TOPIC = "msh/US/2/json/home/!3b81a05";
 
-# Debugger Files
-*.pdb
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-*.so.*
+// Standard M5UnitENV classes for ENV III (SHT30 + QMP6988)
+SHT3X sht3x;
+QMP6988 qmp;
 
+unsigned long lastPublishTime = 0;
+const unsigned long PUBLISH_INTERVAL = 60000; // 60 seconds
 
-# Fortran module files
-*.mod
-*.smod
+void connectWiFi() {
+  if (WiFi.status() == WL_CONNECTED) return;
+  
+  Serial.print("Connecting to Wi-Fi: ");
+  Serial.println(WIFI_SSID);
 
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
+  // Optimize Wi-Fi parameters for ESP32-C6
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false); // Disable Wi-Fi modem sleep
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
 
-# Executables
-*.exe
-*.out
-*.app
+  int retries = 0;
+  while (WiFi.status() != WL_CONNECTED && retries < 20) {
+    delay(250); // Reduced delay for faster loop checks
+    Serial.print(".");
+    retries++;
+  }
 
-# Build directories
-build/
-Build/
-build-*/
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWi-Fi Connected! IP: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\nWi-Fi Connection Failed!");
+  }
+}
 
-# CMake generated files
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
-install_manifest.txt
-compile_commands.json
+void connectMQTT() {
+  while (!mqttClient.connected()) {
+    connectWiFi();
+    Serial.print("Connecting to MQTT Broker...");
+    if (mqttClient.connect(CLIENT_ID)) {
+      Serial.println("Connected!");
+    } else {
+      Serial.print("Failed, rc=");
+      Serial.print(mqttClient.state());
+      Serial.println(" Trying again in 5 seconds...");
+      delay(5000);
+    }
+  }
+}
 
-# Temporary files
-*.tmp
-*.log
-*.bak
-*.swp
+void setup() {
+  NanoC6.begin();
+  
+  // Initialize I2C on Grove Port: SDA=Pin 2, SCL=Pin 1
+  Wire.begin(2, 1, 100000);
 
-# vcpkg
-vcpkg_installed/
+  // Initialize ENV III Sensors safely on initialized Wire bus
+  if (!sht3x.begin(&Wire, SHT3X_I2C_ADDR, 2, 1, 100000)) {
+    Serial.println("Warning: SHT3X (Temp/Hum) sensor not detected!");
+  }
+  if (!qmp.begin(&Wire, QMP6988_SLAVE_ADDRESS_L, 2, 1, 100000)) {
+    Serial.println("Warning: QMP6988 (Pressure) sensor not detected!");
+  }
 
-# debug information files
-*.dwo
+  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  connectWiFi();
+}
 
-# test output & cache
-Testing/
-.cache/
+void loop() {
+  NanoC6.update();
+
+  if (!mqttClient.connected()) {
+    connectMQTT();
+  }
+  mqttClient.loop();
+
+  unsigned long currentTime = millis();
+  if (currentTime - lastPublishTime >= PUBLISH_INTERVAL) {
+    lastPublishTime = currentTime;
+
+    // Read sensor values
+    if (sht3x.update() && qmp.update()) {
+      float temp  = sht3x.cTemp;
+      float hum   = sht3x.humidity;
+      float press = qmp.pressure / 100.0f; // Convert Pa to hPa
+
+      // Construct Meshtastic JSON telemetry payload
+      JsonDocument doc;
+      doc["type"] = "telemetry";
+      
+      // Auto-creates sub-object in ArduinoJson v6 & v7
+      doc["payload"]["temperature"]         = round(temp * 100.0f) / 100.0f;
+      doc["payload"]["relative_humidity"]    = round(hum * 100.0f) / 100.0f;
+      doc["payload"]["barometric_pressure"] = round(press * 100.0f) / 100.0f;
+
+      String output;
+      serializeJson(doc, output);
+
+      if (mqttClient.publish(TOPIC, output.c_str())) {
+        Serial.print("Published to Meshtastic topic: ");
+        Serial.println(output);
+      } else {
+        Serial.println("Publish failed.");
+      }
+    } else {
+      Serial.println("Failed to read from ENV III sensor.");
+    }
+  }
+}#include <M5NanoC6.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <M5UnitENV.h>
+#include <ArduinoJson.h>
+
+// Wi-Fi Configuration
+const char* WIFI_SSID = "Wifi_SSID";
+const char* WIFI_PASS = "WIFI_PASS";
+
+// MQTT Broker Details
+const char* MQTT_BROKER = "IP";
+const int   MQTT_PORT   = PORT
+const char* CLIENT_ID   = "NanoC6_ENV3";
+
+// Target Meshtastic Channel Topic
+const char* TOPIC = "msh/US/2/json/home/!3b81a05";
+
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+
+// Standard M5UnitENV classes for ENV III (SHT30 + QMP6988)
+SHT3X sht3x;
+QMP6988 qmp;
+
+unsigned long lastPublishTime = 0;
+const unsigned long PUBLISH_INTERVAL = 60000; // 60 seconds
+
+void connectWiFi() {
+  if (WiFi.status() == WL_CONNECTED) return;
+  
+  Serial.print("Connecting to Wi-Fi: ");
+  Serial.println(WIFI_SSID);
+
+  // Optimize Wi-Fi parameters for ESP32-C6
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false); // Disable Wi-Fi modem sleep
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  int retries = 0;
+  while (WiFi.status() != WL_CONNECTED && retries < 20) {
+    delay(250); // Reduced delay for faster loop checks
+    Serial.print(".");
+    retries++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWi-Fi Connected! IP: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\nWi-Fi Connection Failed!");
+  }
+}
+
+void connectMQTT() {
+  while (!mqttClient.connected()) {
+    connectWiFi();
+    Serial.print("Connecting to MQTT Broker...");
+    if (mqttClient.connect(CLIENT_ID)) {
+      Serial.println("Connected!");
+    } else {
+      Serial.print("Failed, rc=");
+      Serial.print(mqttClient.state());
+      Serial.println(" Trying again in 5 seconds...");
+      delay(5000);
+    }
+  }
+}
+
+void setup() {
+  NanoC6.begin();
+  
+  // Initialize I2C on Grove Port: SDA=Pin 2, SCL=Pin 1
+  Wire.begin(2, 1, 100000);
+
+  // Initialize ENV III Sensors safely on initialized Wire bus
+  if (!sht3x.begin(&Wire, SHT3X_I2C_ADDR, 2, 1, 100000)) {
+    Serial.println("Warning: SHT3X (Temp/Hum) sensor not detected!");
+  }
+  if (!qmp.begin(&Wire, QMP6988_SLAVE_ADDRESS_L, 2, 1, 100000)) {
+    Serial.println("Warning: QMP6988 (Pressure) sensor not detected!");
+  }
+
+  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  connectWiFi();
+}
+
+void loop() {
+  NanoC6.update();
+
+  if (!mqttClient.connected()) {
+    connectMQTT();
+  }
+  mqttClient.loop();
+
+  unsigned long currentTime = millis();
+  if (currentTime - lastPublishTime >= PUBLISH_INTERVAL) {
+    lastPublishTime = currentTime;
+
+    // Read sensor values
+    if (sht3x.update() && qmp.update()) {
+      float temp  = sht3x.cTemp;
+      float hum   = sht3x.humidity;
+      float press = qmp.pressure / 100.0f; // Convert Pa to hPa
+
+      // Construct Meshtastic JSON telemetry payload
+      JsonDocument doc;
+      doc["type"] = "telemetry";
+      
+      // Auto-creates sub-object in ArduinoJson v6 & v7
+      doc["payload"]["temperature"]         = round(temp * 100.0f) / 100.0f;
+      doc["payload"]["relative_humidity"]    = round(hum * 100.0f) / 100.0f;
+      doc["payload"]["barometric_pressure"] = round(press * 100.0f) / 100.0f;
+
+      String output;
+      serializeJson(doc, output);
+
+      if (mqttClient.publish(TOPIC, output.c_str())) {
+        Serial.print("Published to Meshtastic topic: ");
+        Serial.println(output);
+      } else {
+        Serial.println("Publish failed.");
+      }
+    } else {
+      Serial.println("Failed to read from ENV III sensor.");
+    }
+  }
+}
